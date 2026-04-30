@@ -87,12 +87,20 @@ def sb_update_password(username: str, new_pw: str):
 # ─────────────────────────────────────────────
 # OPERAÇÕES SUPABASE — LANÇAMENTOS
 # ─────────────────────────────────────────────
+def _month_range(year: int, month: int):
+    start = f"{year}-{month:02d}-01"
+    last  = calendar.monthrange(year, month)[1]
+    end   = f"{year}-{month:02d}-{last:02d}"
+    return start, end
+
+
 def sb_get_lancamentos(username: str, year: int, month: int) -> list[dict]:
-    prefix = f"{year}-{month:02d}"
+    start, end = _month_range(year, month)
     res = get_sb().table("lancamentos") \
         .select("*") \
         .eq("username", username) \
-        .like("data", f"{prefix}%") \
+        .gte("data", start) \
+        .lte("data", end) \
         .order("data") \
         .execute()
     return res.data or []
@@ -126,11 +134,12 @@ def sb_delete_lancamento(row_id: int):
 # OPERAÇÕES SUPABASE — DEPÓSITOS
 # ─────────────────────────────────────────────
 def sb_get_depositos(username: str, year: int, month: int) -> list[dict]:
-    prefix = f"{year}-{month:02d}"
+    start, end = _month_range(year, month)
     res = get_sb().table("depositos") \
         .select("*") \
         .eq("username", username) \
-        .like("data", f"{prefix}%") \
+        .gte("data", start) \
+        .lte("data", end) \
         .order("data") \
         .execute()
     return res.data or []
@@ -188,10 +197,10 @@ def sb_upsert_meta(username: str, ano_mes: str, meta: float | None = None,
 
 
 def sb_delete_mes(username: str, year: int, month: int):
-    prefix = f"{year}-{month:02d}"
+    start, end = _month_range(year, month)
     sb = get_sb()
-    sb.table("lancamentos").delete().eq("username", username).like("data", f"{prefix}%").execute()
-    sb.table("depositos").delete().eq("username", username).like("data", f"{prefix}%").execute()
+    sb.table("lancamentos").delete().eq("username", username).gte("data", start).lte("data", end).execute()
+    sb.table("depositos").delete().eq("username", username).gte("data", start).lte("data", end).execute()
 
 
 # ─────────────────────────────────────────────
