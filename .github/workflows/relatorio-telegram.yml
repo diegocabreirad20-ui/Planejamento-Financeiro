@@ -1,0 +1,139 @@
+name: Relatório Financeiro Diário
+
+on:
+  schedule:
+    # 23h00 horário de Brasília = 02h00 UTC (próximo dia)
+    - cron: '0 2 * * *'
+  workflow_dispatch: # permite rodar manualmente pelo GitHub
+
+jobs:
+  enviar-relatorio:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gerar e enviar relatório
+        env:
+          SUPABASE_URL: https://fturzslaaaroimsuzrge.supabase.co
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 << 'PYEOF'
+          import urllib.request, urllib.parse, json, datetime, os
+
+          SUPABASE_URL = os.environ['SUPABASE_URL']
+          SUPABASE_KEY = os.environ['SUPABASE_KEY']
+          BOT_TOKEN    = os.environ['TELEGRAM_TOKEN']
+          CHAT_ID      = os.environ['TELEGRAM_CHAT_ID']
+
+          headers = {
+              'apikey': SUPABASE_KEY,
+              'Authorization': f'Bearer {SUPABASE_KEY}',
+              'Content-Type': 'application/json'
+          }
+
+          today = datetime.date.today()
+          ano_mes = today.strftime('%Y-%m')
+          inicio = f'{ano_mes}-01'
+          fim    = today.isoformat()
+
+          def sb_get(table, params=''):
+              url = f'{SUPABASE_URL}/rest/v1/{table}?{params}'
+              req = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(req) as r:
+                  return json.loads(r.read())
+
+          # Busca dados do mês atual (todos os usuários)
+          lancs = sb_get('lancamentos', f'data=gte.{inicio}&data=lte.{fim}&order=data.asc')
+          deps  = sb_get('depositos',   f'data=gte.{inicio}&data=lte.{fim}')
+          metas = sb_get('metas',       f'ano_mes=eq.{ano_mes}')
+
+          def brl(v):
+              return f"R$ {float(v or 0):,.2f}".replace(',','X').replace('.',',').replace('X','.')
+
+          # Cálculos
+          total_receitas = sum(float(d['valor']) for d in deps)
+          total_custos   = sum(float(l['valor']) for l in lancs)
+          saldo          = total_receitas - total_custos
+
+          em_aberto = [l for l in lancs if l['status'] == 'Em Aberto']
+          pagos      = [l for l in lancs if l['status'] == 'Pago']
+          atrasados  = [l for l in lancs if l['status'] == 'Atrasado']
+
+          total_aberto   = sum(float(l['valor']) for l in em_aberto)
+          total_pago     = sum(float(l['valor']) for l in pagos)
+          total_atrasado = sum(float(l['valor']) for l in atrasados)
+
+          p1_aberto = [l for l in em_aberto if l['peso'] == 1]
+          p2_aberto = [l for l in em_aberto if l['peso'] == 2]
+          p3_aberto = [l for l in em_aberto if l['peso'] == 3]
+
+          # Montar mensagem
+          dia_semana = ['Segunda','Terça','Quarta','Quinta','Sexta','Sábado','Domingo'][today.weekday()]
+          data_fmt   = today.strftime('%d/%m/%Y')
+
+          msg = f"""📊 *RELATÓRIO FINANCEIRO DIÁRIO*
+          _{dia_semana}, {data_fmt}_
+
+          ━━━━━━━━━━━━━━━━━━━━
+          💰 *RESUMO DO MÊS* ({today.strftime('%m/%Y')})
+          ━━━━━━━━━━━━━━━━━━━━
+          📥 Receitas:   `{brl(total_receitas)}`
+          📤 Custos:     `{brl(total_custos)}`
+          {'🟢' if saldo >= 0 else '🔴'} Saldo:      `{brl(saldo)}`
+
+          ━━━━━━━━━━━━━━━━━━━━
+          📋 *LANÇAMENTOS*
+          ━━━━━━━━━━━━━━━━━━━━
+          ✅ Pagos:      `{brl(total_pago)}` ({len(pagos)} contas)
+          🕐 Em Aberto: `{brl(total_aberto)}` ({len(em_aberto)} contas)
+          🔴 Atrasados: `{brl(total_atrasado)}` ({len(atrasados)} contas)"""
+
+          if atrasados:
+              msg += '\n\n⚠️ *CONTAS ATRASADAS:*'
+              for l in atrasados[:5]:
+                  msg += f"\n  • {l['descricao']}: `{brl(l['valor'])}`"
+
+          if p1_aberto:
+              msg += '\n\n🚨 *PRIORIDADE ALTA (peso 1):*'
+              for l in p1_aberto[:5]:
+                  msg += f"\n  • {l['descricao']}: `{brl(l['valor'])}`"
+
+          if p2_aberto:
+              msg += '\n\n🟡 *PRIORIDADE MÉDIA (peso 2):*'
+              for l in p2_aberto[:3]:
+                  msg += f"\n  • {l['descricao']}: `{brl(l['valor'])}`"
+
+          if len(em_aberto) == 0 and len(lancs) > 0:
+              msg += '\n\n🎉 *TODAS AS CONTAS DO MÊS FORAM PAGAS!* ❤️'
+
+          if metas:
+              msg += '\n\n━━━━━━━━━━━━━━━━━━━━\n🎯 *METAS DE ECONOMIA*\n━━━━━━━━━━━━━━━━━━━━'
+              for m in metas:
+                  meta_val = float(m['meta'] or 0)
+                  guard    = float(m['guardado'] or 0)
+                  pct      = (guard/meta_val*100) if meta_val > 0 else 0
+                  bar_fill = int(pct / 10)
+                  bar = '█' * bar_fill + '░' * (10 - bar_fill)
+                  msg += f"\n👤 {m['username']}: `{bar}` {pct:.0f}%"
+                  msg += f"\n   Guardado: `{brl(guard)}` / Meta: `{brl(meta_val)}`"
+
+          msg += '\n\n━━━━━━━━━━━━━━━━━━━━'
+          msg += '\n_Dashboard Financeiro / Semanal da Minha Vida_ 💛'
+
+          # Enviar via Telegram
+          payload = json.dumps({
+              'chat_id': CHAT_ID,
+              'text': msg,
+              'parse_mode': 'Markdown'
+          }).encode()
+
+          url = f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage'
+          req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
+          with urllib.request.urlopen(req) as r:
+              resp = json.loads(r.read())
+              if resp.get('ok'):
+                  print('✅ Relatório enviado com sucesso!')
+              else:
+                  print(f'❌ Erro: {resp}')
+                  exit(1)
+          PYEOF
